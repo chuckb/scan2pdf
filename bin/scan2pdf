@@ -181,9 +181,15 @@ tiff2pdf_params = []
 
 unpaper_params << "--no-processing" unless options[:unpaper]
 
+# scanimage changed how custom options are presented in version 1.0.22
+# added support here to handle this difference
+si_options_switch = "--help"
+si_version = /(\d+)\.(\d+)\.(\d+)/.match(`scanimage --version`)
+si_options_switch = "-A" if si_version[1].to_i >= 1 && si_version[2].to_i >= 0 && si_version[3].to_i >= 22
+
 scanimage_available_options = {}
 si_opts_re = /^\s+(--[\w-]+|-[a-z])(\s+|\[=\()([\w .|]+)(\)\])?\s+\[([\w .]+)\]$/
-`scanimage -d '#{options[:device]}' -A`.split("\n").each do |line|
+`scanimage -d '#{options[:device]}' #{si_options_switch}`.split("\n").each do |line|
   if res = si_opts_re.match(line)
     next if res[5] == "inactive"
     scanimage_available_options[res[1]] = res[3].split("|")
