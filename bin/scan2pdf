@@ -181,6 +181,10 @@ tiff2pdf_params = []
 
 unpaper_params << "--no-processing" unless options[:unpaper]
 
+# unpaper uses lots of memory during the deskewing qpixel conversion process
+# disable this behavior on memory constrained systems
+unpaper_params << "--no-qpixels" unless `free -o -t | grep Total`.split[1].to_i > 512000
+
 # scanimage changed how custom options are presented in version 1.0.22
 # added support here to handle this difference
 si_options_switch = "--help"
