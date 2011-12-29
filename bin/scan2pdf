@@ -123,6 +123,18 @@ def puterror(exit_val, msg)
   exit exit_val
 end
 
+def free_memory
+  return `free | grep buffers/cache`.split[3].to_i 
+end
+
+def total_memory
+  return `free -o -t | grep Total`.split[1].to_i
+end
+
+def percent_free
+  return (free_memory.to_f / total_memory.to_f) * 100
+end
+
 if options[:pages] <= 0 and options[:documents] <= 0
   puterror 12, "can't have unbound documents with unbound pages"
 end
@@ -183,7 +195,7 @@ unpaper_params << "--no-processing" unless options[:unpaper]
 
 # unpaper uses lots of memory during the deskewing qpixel conversion process
 # disable this behavior on memory constrained systems
-unpaper_params << "--no-qpixels" unless `free -o -t | grep Total`.split[1].to_i > 512000
+unpaper_params << "--no-qpixels" unless total_memory > 512000
 
 # scanimage changed how custom options are presented in version 1.0.22
 # added support here to handle this difference
@@ -404,6 +416,8 @@ scanned_pages = Dir["raw*"]
 rotation = options[:rotate].to_i % 360
 double_layout = (options[:layout] =~ /^double(-folded)?/) != nil
 
+memory_low = percent_free < 30 ? true : false
+
 scanned_pages.each do |page|
   Process.fork do
     at_exit { exit! }
@@ -466,6 +480,15 @@ scanned_pages.each do |page|
              })
     end
   end
+  if memory_low
+    # If memory low to begin with, single-thread
+    Process.wait
+  else
+    # Enough memory there to start with, so wait until more frees to start more
+    begin
+      sleep 2
+    end while percent_free < 30 
+  end
 end
 
 Process.waitall
@@ -492,6 +515,15 @@ options[:documents].times do |doc|
     system("tiffcp", doc_pages, doctiff)
     system("tiff2pdf", tiff2pdf_params, "-o", docpdf, doctiff)
     $stdout.puts "scan2pdf: #{docpdf} created"
+  end
+  if memory_low
+    # If memory low to begin with, single-thread
+    Process.wait
+  else
+    # Enough memory there to start with, so wait until more frees to start more
+    begin
+      sleep 2
+    end while percent_free < 30 
   end
 end
 
