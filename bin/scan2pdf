@@ -46,6 +46,19 @@ rescue Gem::LoadError
   end
 end
 
+# set up empty settings by default, since we can only load them if the
+# inifile gem is installed, and it's not a good idea to firce that.
+settings = {}
+
+begin
+  require 'inifile'
+
+  configfile = File.expand_path("#{ENV['XDG_CONFIG_HOME'] || '~/.config'}/eu.flameeyes.scan2pdf")
+
+  # convert to multi-hash as otherwise it wouldn't respond to has_key?
+  settings = IniFile.new(configfile).to_h if File.exists?(configfile)
+end
+
 ORIGINAL_PWD=Dir.pwd
 
 MODES = ['gray', 'color', 'lineart']
@@ -97,16 +110,7 @@ options_set = {
   :layout => ["-L", "--layout LAYOUT", LAYOUT, "Select scan layout (single or double)"],
 }
 
-options = {
-  :rotate => 0,
-  :pages => -1,
-  :documents => 1,
-  :mode => 'lineart',
-  :unpaper => true,
-  :size_name => '210x296.926',
-  :resolution => 300,
-  :layout => 'single',
-}
+options = {}
 
 OptionParser.new do |opts|
   opts.banner = "Usage: scan2pdf.rb [options]"
@@ -134,6 +138,47 @@ end
 def percent_free
   return (free_memory.to_f / total_memory.to_f) * 100
 end
+
+if options[:device].nil?
+  # check if there is a default device set in the configuration file;
+  # this is handy to avoid using the fully qualified SANE device name
+  # (which includes the USB bus/device address, and is thus variable)
+  if settings.has_key?("defaults") and settings["defaults"].has_key?("device")
+    options[:device] = settings["defaults"]["device"]
+  else
+    # if the user didn't choose a device, ask sane which ones are
+    # available and take the first one reported by scanimage as valid.
+    options[:device] ||= `scanimage --formatted-device-list='%d '`.split()[0]
+  end
+end
+
+# now find out if the user has set any option in the configuration
+# file for that particular device; these options would be overridden
+# by the command line, so only merge it if it's not set already.
+if settings.has_key?(options[:device])
+  settings[options[:device]].each_pair do |key, value|
+    # inifile reads everything as string, so we replace the values
+    # when we want a different type
+    case key
+    when "rotate", "pages", "documents", "resolution"
+      value = value.to_i
+    when "unpaper"
+      value = (value == "true")
+    end
+
+    options[key.to_sym] ||= value
+  end
+end
+
+# and finally set the defaults
+options[:rotate] ||= 0
+options[:pages] ||= -1
+options[:documents] ||= 1
+options[:mode] ||= 'lineart'
+options[:unpaper] ||= true
+options[:size_name] ||= '210x296.926'
+options[:resolution] ||= 300
+options[:layout] ||= 'single'
 
 if options[:pages] <= 0 and options[:documents] <= 0
   puterror 12, "can't have unbound documents with unbound pages"
@@ -165,10 +210,6 @@ else
   options[:output] = "#{Dir::pwd}/#{options[:output]}"
 end
 
-# if the user didn't choose a device already, ask sane which ones are
-# available and take the first one in the list.
-options[:device] ||= `scanimage --formatted-device-list='%d '`.split()[0]
-
 # make sure that if the user only provided --duplex, it gets seen as
 # --duplex=best
 options[:duplex] ||= "best" if options.has_key? :duplex
@@ -197,15 +238,29 @@ unpaper_params << "--no-processing" unless options[:unpaper]
 # disable this behavior on memory constrained systems
 unpaper_params << "--no-qpixels" unless total_memory > 512000
 
-# scanimage changed how custom options are presented in version 1.0.22
-# added support here to handle this difference
-si_options_switch = "--help"
-si_version = /(\d+)\.(\d+)\.(\d+)/.match(`scanimage --version`)
-si_options_switch = "-A" if si_version[1].to_i >= 1 && si_version[2].to_i >= 0 && si_version[3].to_i >= 22
-
 scanimage_available_options = {}
+
+# scanimage introduced the -A (--all-options) option in version
+# 1.0.22; before that we can't request all the hidden options, so we
+# have to rely on the subset reported by --help instead.
+#
+# Start by getting the version of scanimage; the scanimage --version
+# call will report two versions: the first time it's scanimage's own
+# version, and the second it's the version of the backend library
+# (usually the same); the match will only get the former and that's
+# what we care about.
+#
+# We use Gem::Version to compare the two versions to avoid having to
+# reproduce the logic, which is nasty to read.
+#
+# If we're dealing with older scanimage versions, fallback to the old
+# --help option.
+
+si_version = Gem::Version.new(/\d+\.\d+\.\d+/.match(`scanimage --version`).to_s)
+si_all_options = si_version >= Gem::Version.new("1.0.22") ? "--all-options" : "--help"
+
 si_opts_re = /^\s+(--[\w-]+|-[a-z])(\s+|\[=\()([\w .|]+)(\)\])?\s+\[([\w .]+)\]$/
-`scanimage -d '#{options[:device]}' #{si_options_switch}`.split("\n").each do |line|
+`scanimage -d '#{options[:device]}' #{si_all_options}`.split("\n").each do |line|
   if res = si_opts_re.match(line)
     next if res[5] == "inactive"
     scanimage_available_options[res[1]] = res[3].split("|")
